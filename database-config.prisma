@@ -1,0 +1,1113 @@
+// EMR Database Configuration
+// Comprehensive Prisma Schema for all 33 EMR Modules
+// Multi-tenant, HIPAA-compliant database design
+
+generator client {
+  provider = "prisma-client-js"
+  previewFeatures = ["fullTextSearch", "fieldReference"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// CORE SYSTEM MODELS
+// ============================================================================
+
+model Tenant {
+  id          String   @id @default(cuid())
+  name        String
+  domain      String   @unique
+  subdomain   String   @unique
+  settings    Json?
+  status      TenantStatus @default(ACTIVE)
+  
+  // Relationships
+  users       User[]
+  patients    Patient[]
+  appointments Appointment[]
+  departments Department[]
+  facilities  Facility[]
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@map("tenants")
+}
+
+model User {
+  id          String      @id @default(cuid())
+  tenantId    String
+  email       String
+  password    String
+  firstName   String
+  lastName    String
+  role        UserRole
+  permissions Json?
+  isActive    Boolean     @default(true)
+  lastLoginAt DateTime?
+  
+  // Profile information
+  profile     UserProfile?
+  
+  // Relationships
+  tenant      Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  appointments Appointment[] @relation("DoctorAppointments")
+  auditLogs   AuditLog[]
+  prescriptions Prescription[] @relation("PrescribingDoctor")
+  labOrders   LabOrder[]  @relation("OrderingPhysician")
+  medicalRecords MedicalRecord[] @relation("AttendingPhysician")
+  radiologyReports RadiologyReport[] @relation("Radiologist")
+  
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  
+  @@unique([tenantId, email])
+  @@index([tenantId, role])
+  @@index([email])
+  @@map("users")
+}
+
+model UserProfile {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  phone       String?
+  address     Json?
+  specialties String[]
+  licenseNumber String?
+  npiNumber   String?
+  signature   String?  // Digital signature
+  
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@map("user_profiles")
+}
+
+// ============================================================================
+// PATIENT MANAGEMENT (Modules 1-4)
+// ============================================================================
+
+model Patient {
+  id              String          @id @default(cuid())
+  tenantId        String
+  mrn             String          // Medical Record Number
+  firstName       String
+  lastName        String
+  middleName      String?
+  dateOfBirth     DateTime
+  gender          Gender
+  phone           String
+  email           String?
+  address         Json?
+  
+  // Insurance and Identity
+  insurance       PatientInsurance[]
+  identityDocs    IdentityDocument[]
+  
+  // Medical Information
+  allergies       Allergy[]
+  medicalHistory  Json?
+  familyHistory   Json?
+  socialHistory   Json?
+  emergencyContacts Json?
+  
+  // Preferences
+  language        String          @default("en")
+  communicationPrefs Json?
+  privacySettings Json?
+  
+  // Status and Tracking
+  status          PatientStatus   @default(ACTIVE)
+  registrationDate DateTime       @default(now())
+  lastVisitDate   DateTime?
+  
+  // Relationships
+  tenant          Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  appointments    Appointment[]
+  medicalRecords  MedicalRecord[]
+  prescriptions   Prescription[]
+  labResults      LabResult[]
+  labOrders       LabOrder[]
+  vitals          VitalSigns[]
+  visits          Visit[]
+  billingRecords  BillingRecord[]
+  medicalImages   MedicalImage[]
+  telehealth      TelehealthSession[]
+  
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  
+  @@unique([tenantId, mrn])
+  @@index([tenantId, lastName, firstName])
+  @@index([phone])
+  @@index([email])
+  @@fulltext([firstName, lastName])
+  @@map("patients")
+}
+
+model PatientInsurance {
+  id              String   @id @default(cuid())
+  patientId       String
+  insuranceType   InsuranceType
+  policyNumber    String
+  groupNumber     String?
+  subscriberId    String
+  subscriberName  String
+  relationship    String
+  effectiveDate   DateTime
+  expirationDate  DateTime?
+  copay           Decimal?
+  deductible      Decimal?
+  
+  patient         Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  @@map("patient_insurance")
+}
+
+model IdentityDocument {
+  id          String   @id @default(cuid())
+  patientId   String
+  docType     DocumentType
+  docNumber   String
+  issuingState String?
+  expirationDate DateTime?
+  fileUrl     String
+  verified    Boolean  @default(false)
+  verifiedAt  DateTime?
+  
+  patient     Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@map("identity_documents")
+}
+
+model Allergy {
+  id          String      @id @default(cuid())
+  patientId   String
+  allergen    String
+  allergyType AllergyType
+  severity    AllergySeverity
+  reaction    String?
+  notes       String?
+  onsetDate   DateTime?
+  
+  patient     Patient     @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  
+  @@index([patientId])
+  @@map("allergies")
+}
+
+// ============================================================================
+// APPOINTMENTS & VISITS (Modules 3-4)
+// ============================================================================
+
+model Appointment {
+  id          String            @id @default(cuid())
+  tenantId    String
+  patientId   String
+  doctorId    String
+  facilityId  String?
+  departmentId String?
+  
+  startTime   DateTime
+  endTime     DateTime
+  duration    Int               // in minutes
+  appointmentType AppointmentType
+  status      AppointmentStatus
+  priority    Priority          @default(NORMAL)
+  
+  // Details
+  reasonForVisit String?
+  notes       String?
+  location    String?
+  roomNumber  String?
+  
+  // Scheduling
+  isRecurring Boolean           @default(false)
+  recurringPattern Json?
+  parentAppointmentId String?
+  
+  // Notifications
+  remindersSent Json?
+  confirmationStatus ConfirmationStatus @default(PENDING)
+  
+  // Relationships
+  tenant      Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  patient     Patient           @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  doctor      User              @relation("DoctorAppointments", fields: [doctorId], references: [id])
+  facility    Facility?         @relation(fields: [facilityId], references: [id])
+  department  Department?       @relation(fields: [departmentId], references: [id])
+  visit       Visit?
+  
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  
+  @@index([tenantId, startTime])
+  @@index([patientId, startTime])
+  @@index([doctorId, startTime])
+  @@index([status])
+  @@map("appointments")
+}
+
+model Visit {
+  id              String      @id @default(cuid())
+  appointmentId   String      @unique
+  patientId       String
+  
+  // Visit Details
+  checkInTime     DateTime?
+  checkOutTime    DateTime?
+  visitType       VisitType
+  chiefComplaint  String?
+  
+  // Clinical Data
+  vitals          VitalSigns[]
+  medicalRecords  MedicalRecord[]
+  
+  // Status Tracking
+  status          VisitStatus @default(SCHEDULED)
+  currentLocation String?
+  waitTime        Int?        // in minutes
+  
+  // Relationships
+  appointment     Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  patient         Patient     @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  
+  @@index([patientId])
+  @@index([status])
+  @@map("visits")
+}
+
+// ============================================================================
+// CLINICAL DOCUMENTATION (Modules 5-7)
+// ============================================================================
+
+model MedicalRecord {
+  id              String   @id @default(cuid())
+  patientId       String
+  doctorId        String
+  visitId         String?
+  
+  // SOAP Note Structure
+  subjective      String?  // Patient's reported symptoms
+  objective       String?  // Observable findings
+  assessment      String?  // Clinical impression
+  plan            String?  // Treatment plan
+  
+  // Additional Clinical Data
+  chiefComplaint  String?
+  historyOfPresentIllness String?
+  reviewOfSystems String?
+  physicalExam    String?
+  
+  // Diagnosis and Coding
+  diagnoses       Diagnosis[]
+  icdCodes        String[]
+  cptCodes        String[]
+  
+  // AI and Templates
+  aiGenerated     Boolean  @default(false)
+  templateUsed    String?
+  confidence      Float?
+  
+  // Document Management
+  version         Int      @default(1)
+  status          DocumentStatus @default(DRAFT)
+  signedAt        DateTime?
+  signedBy        String?
+  
+  // Relationships
+  patient         Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  doctor          User     @relation("AttendingPhysician", fields: [doctorId], references: [id])
+  visit           Visit?   @relation(fields: [visitId], references: [id])
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  @@index([patientId, createdAt])
+  @@index([doctorId])
+  @@fulltext([subjective, objective, assessment, plan])
+  @@map("medical_records")
+}
+
+model Diagnosis {
+  id              String        @id @default(cuid())
+  medicalRecordId String
+  
+  code            String        // ICD-10 code
+  description     String
+  diagnosisType   DiagnosisType
+  severity        Severity?
+  status          DiagnosisStatus @default(ACTIVE)
+  onsetDate       DateTime?
+  resolvedDate    DateTime?
+  
+  medicalRecord   MedicalRecord @relation(fields: [medicalRecordId], references: [id], onDelete: Cascade)
+  
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  
+  @@index([code])
+  @@map("diagnoses")
+}
+
+model VitalSigns {
+  id              String   @id @default(cuid())
+  patientId       String
+  visitId         String?
+  recordedBy      String
+  
+  // Vital Signs Data
+  temperature     Float?   // Celsius
+  bloodPressureSystolic Int?
+  bloodPressureDiastolic Int?
+  heartRate       Int?     // BPM
+  respiratoryRate Int?     // per minute
+  oxygenSaturation Float?  // percentage
+  weight          Float?   // kg
+  height          Float?   // cm
+  bmi             Float?   // calculated
+  painScale       Int?     // 1-10
+  
+  // Additional Measurements
+  glucoseLevel    Float?
+  cholesterol     Float?
+  
+  // Metadata
+  recordedAt      DateTime @default(now())
+  deviceUsed      String?
+  notes           String?
+  
+  // Relationships
+  patient         Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  visit           Visit?   @relation(fields: [visitId], references: [id])
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  @@index([patientId, recordedAt])
+  @@map("vital_signs")
+}
+
+// ============================================================================
+// PRESCRIPTIONS & MEDICATIONS (Modules 9-10)
+// ============================================================================
+
+model Prescription {
+  id              String             @id @default(cuid())
+  patientId       String
+  doctorId        String
+  
+  // Medication Details
+  medication      String
+  genericName     String?
+  strength        String
+  dosageForm      String             // tablet, capsule, liquid, etc.
+  dosage          String
+  frequency       String
+  duration        String
+  quantity        Int
+  refills         Int                @default(0)
+  
+  // Instructions
+  instructions    String?
+  indications     String?
+  warnings        String?
+  
+  // Status and Tracking
+  status          PrescriptionStatus @default(PENDING)
+  prescribedAt    DateTime           @default(now())
+  filledAt        DateTime?
+  pharmacyId      String?
+  
+  // Digital Signature and Security
+  digitalSignature String?
+  dea             String?            // DEA number for controlled substances
+  isControlled    Boolean            @default(false)
+  
+  // Insurance and Billing
+  formularyStatus FormularyStatus?
+  priorAuthRequired Boolean          @default(false)
+  priorAuthNumber String?
+  copay           Decimal?
+  
+  // Drug Interactions and Alerts
+  interactions    Json?              // Drug interaction warnings
+  allergyAlerts   Json?              // Allergy conflict alerts
+  
+  // Relationships
+  patient         Patient            @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  doctor          User               @relation("PrescribingDoctor", fields: [doctorId], references: [id])
+  
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  
+  @@index([patientId])
+  @@index([doctorId])
+  @@index([status])
+  @@map("prescriptions")
+}
+
+// ============================================================================
+// LABORATORY (Module 11)
+// ============================================================================
+
+model LabOrder {
+  id              String      @id @default(cuid())
+  patientId       String
+  orderingPhysicianId String
+  
+  orderNumber     String      @unique
+  orderDate       DateTime    @default(now())
+  priority        Priority    @default(NORMAL)
+  status          LabOrderStatus @default(ORDERED)
+  
+  // Test Information
+  tests           LabTest[]
+  clinicalInfo    String?     // Clinical indication
+  diagnosis       String?
+  icdCodes        String[]
+  
+  // Collection Information
+  specimenType    String?
+  collectionDate  DateTime?
+  collectedBy     String?
+  
+  // AI Recommendations
+  aiRecommendedTests String[]
+  
+  // Relationships
+  patient         Patient     @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  orderingPhysician User      @relation("OrderingPhysician", fields: [orderingPhysicianId], references: [id])
+  results         LabResult[]
+  
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  
+  @@index([patientId])
+  @@index([orderNumber])
+  @@map("lab_orders")
+}
+
+model LabTest {
+  id          String   @id @default(cuid())
+  labOrderId  String
+  
+  testCode    String   // LOINC code
+  testName    String
+  category    String
+  urgency     Priority @default(NORMAL)
+  
+  labOrder    LabOrder @relation(fields: [labOrderId], references: [id], onDelete: Cascade)
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@map("lab_tests")
+}
+
+model LabResult {
+  id              String         @id @default(cuid())
+  labOrderId      String
+  patientId       String
+  testCode        String
+  testName        String
+  
+  // Result Data
+  value           String?
+  numericValue    Float?
+  unit            String?
+  referenceRange  String?
+  status          LabResultStatus @default(PENDING)
+  abnormalFlag    AbnormalFlag?
+  
+  // Critical Values
+  isCritical      Boolean        @default(false)
+  criticalNotifiedAt DateTime?
+  
+  // AI Analysis
+  aiAnalysis      Json?
+  aiInterpretation String?
+  
+  // Timing
+  collectedAt     DateTime?
+  resultedAt      DateTime?
+  verifiedAt      DateTime?
+  verifiedBy      String?
+  
+  // Relationships
+  labOrder        LabOrder       @relation(fields: [labOrderId], references: [id], onDelete: Cascade)
+  patient         Patient        @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  
+  @@index([patientId, resultedAt])
+  @@index([testCode])
+  @@map("lab_results")
+}
+
+// ============================================================================
+// MEDICAL IMAGING & PACS (Module 13)
+// ============================================================================
+
+model MedicalImage {
+  id              String      @id @default(cuid())
+  patientId       String
+  orderId         String?
+  
+  // DICOM Information
+  studyInstanceUID String     @unique
+  seriesInstanceUID String
+  sopInstanceUID  String      @unique
+  dicomFile       String      // File path or URL
+  
+  // Study Details
+  studyType       String      // CT, MRI, X-Ray, etc.
+  bodyPart        String
+  studyDate       DateTime
+  modality        String
+  
+  // AI Analysis
+  aiFindings      Json?
+  aiConfidence    Float?
+  abnormalitiesDetected Boolean @default(false)
+  
+  // PACS Integration
+  pacsId          String?
+  pacsStatus      PACSStatus  @default(PENDING)
+  
+  // Status
+  status          ImageStatus @default(AVAILABLE)
+  
+  // Relationships
+  patient         Patient     @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  radiologyReports RadiologyReport[]
+  
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  
+  @@index([patientId])
+  @@index([studyType])
+  @@map("medical_images")
+}
+
+model RadiologyReport {
+  id              String      @id @default(cuid())
+  imageId         String
+  radiologistId   String
+  
+  // Report Content
+  findings        String
+  impression      String
+  recommendations String?
+  
+  // AI Assistance
+  aiDraftContent  String?
+  aiAssisted      Boolean     @default(false)
+  
+  // Status and Workflow
+  status          ReportStatus @default(DRAFT)
+  dictatedAt      DateTime?
+  transcribedAt   DateTime?
+  signedAt        DateTime?
+  
+  // Relationships
+  image           MedicalImage @relation(fields: [imageId], references: [id], onDelete: Cascade)
+  radiologist     User        @relation("Radiologist", fields: [radiologistId], references: [id])
+  
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  
+  @@index([radiologistId])
+  @@map("radiology_reports")
+}
+
+// ============================================================================
+// TELEHEALTH (Module 24)
+// ============================================================================
+
+model TelehealthSession {
+  id              String            @id @default(cuid())
+  patientId       String
+  providerId      String
+  appointmentId   String?
+  
+  // Session Details
+  sessionType     TelehealthType
+  startTime       DateTime
+  endTime         DateTime?
+  duration        Int?              // in minutes
+  
+  // Technical Details
+  sessionUrl      String
+  recordingUrl    String?
+  isRecorded      Boolean           @default(false)
+  
+  // Status
+  status          TelehealthStatus  @default(SCHEDULED)
+  connectionQuality String?
+  
+  // Notes
+  sessionNotes    String?
+  technicalIssues String?
+  
+  // Relationships
+  patient         Patient           @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  appointment     Appointment?      @relation(fields: [appointmentId], references: [id])
+  
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  
+  @@index([patientId])
+  @@index([providerId])
+  @@map("telehealth_sessions")
+}
+
+// ============================================================================
+// BILLING & FINANCIAL (Modules 17-18)
+// ============================================================================
+
+model BillingRecord {
+  id              String        @id @default(cuid())
+  patientId       String
+  appointmentId   String?
+  
+  // Billing Details
+  invoiceNumber   String        @unique
+  billDate        DateTime      @default(now())
+  dueDate         DateTime
+  totalAmount     Decimal
+  paidAmount      Decimal       @default(0)
+  balanceAmount   Decimal
+  
+  // Insurance
+  insuranceClaim  InsuranceClaim?
+  
+  // Status
+  status          BillingStatus @default(PENDING)
+  
+  // Line Items
+  lineItems       BillingLineItem[]
+  
+  // Relationships
+  patient         Patient       @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  
+  @@index([patientId])
+  @@index([status])
+  @@map("billing_records")
+}
+
+model BillingLineItem {
+  id              String        @id @default(cuid())
+  billingRecordId String
+  
+  // Service Details
+  serviceCode     String        // CPT code
+  description     String
+  quantity        Int           @default(1)
+  unitPrice       Decimal
+  totalPrice      Decimal
+  
+  // Coding
+  icdCodes        String[]
+  modifiers       String[]
+  
+  billingRecord   BillingRecord @relation(fields: [billingRecordId], references: [id], onDelete: Cascade)
+  
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  
+  @@map("billing_line_items")
+}
+
+model InsuranceClaim {
+  id              String        @id @default(cuid())
+  billingRecordId String        @unique
+  
+  // Claim Details
+  claimNumber     String        @unique
+  submissionDate  DateTime      @default(now())
+  claimType       ClaimType
+  
+  // Amounts
+  claimedAmount   Decimal
+  approvedAmount  Decimal?
+  paidAmount      Decimal?
+  
+  // Status Tracking
+  status          ClaimStatus   @default(SUBMITTED)
+  denialReason    String?
+  
+  // Processing
+  processedDate   DateTime?
+  paymentDate     DateTime?
+  
+  billingRecord   BillingRecord @relation(fields: [billingRecordId], references: [id], onDelete: Cascade)
+  
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  
+  @@index([status])
+  @@map("insurance_claims")
+}
+
+// ============================================================================
+// SYSTEM ADMINISTRATION (Modules 14-16)
+// ============================================================================
+
+model Department {
+  id          String        @id @default(cuid())
+  tenantId    String
+  name        String
+  code        String
+  description String?
+  isActive    Boolean       @default(true)
+  
+  tenant      Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  appointments Appointment[]
+  
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  
+  @@unique([tenantId, code])
+  @@map("departments")
+}
+
+model Facility {
+  id          String        @id @default(cuid())
+  tenantId    String
+  name        String
+  address     Json
+  phone       String?
+  email       String?
+  isActive    Boolean       @default(true)
+  
+  tenant      Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  appointments Appointment[]
+  
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  
+  @@map("facilities")
+}
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  userId      String
+  tenantId    String?
+  
+  // Action Details
+  action      String
+  resource    String
+  resourceId  String?
+  details     Json?
+  
+  // Request Information
+  ipAddress   String?
+  userAgent   String?
+  sessionId   String?
+  
+  // Result
+  success     Boolean  @default(true)
+  error       String?
+  
+  // Timing
+  timestamp   DateTime @default(now())
+  duration    Int?     // in milliseconds
+  
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId, timestamp])
+  @@index([action])
+  @@index([resource])
+  @@map("audit_logs")
+}
+
+// ============================================================================
+// ENUMS
+// ============================================================================
+
+enum TenantStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  ADMIN
+  DOCTOR
+  NURSE
+  LAB_TECH
+  PHARMACIST
+  RADIOLOGIST
+  RECEPTIONIST
+  PATIENT
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+  UNKNOWN
+}
+
+enum PatientStatus {
+  ACTIVE
+  INACTIVE
+  DECEASED
+  MERGED
+}
+
+enum InsuranceType {
+  PRIMARY
+  SECONDARY
+  TERTIARY
+}
+
+enum DocumentType {
+  DRIVERS_LICENSE
+  PASSPORT
+  STATE_ID
+  INSURANCE_CARD
+  OTHER
+}
+
+enum AllergyType {
+  DRUG
+  FOOD
+  ENVIRONMENTAL
+  OTHER
+}
+
+enum AllergySeverity {
+  MILD
+  MODERATE
+  SEVERE
+  LIFE_THREATENING
+}
+
+enum AppointmentType {
+  CONSULTATION
+  FOLLOW_UP
+  PROCEDURE
+  SURGERY
+  TELEHEALTH
+  EMERGENCY
+  ROUTINE_CHECKUP
+}
+
+enum AppointmentStatus {
+  SCHEDULED
+  CONFIRMED
+  CHECKED_IN
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+  RESCHEDULED
+}
+
+enum ConfirmationStatus {
+  PENDING
+  CONFIRMED
+  DECLINED
+}
+
+enum Priority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+  CRITICAL
+}
+
+enum VisitType {
+  OFFICE_VISIT
+  HOSPITAL_VISIT
+  TELEHEALTH
+  HOME_VISIT
+  EMERGENCY
+}
+
+enum VisitStatus {
+  SCHEDULED
+  CHECKED_IN
+  WAITING
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum DocumentStatus {
+  DRAFT
+  PENDING_REVIEW
+  REVIEWED
+  SIGNED
+  AMENDED
+  DELETED
+}
+
+enum DiagnosisType {
+  PRIMARY
+  SECONDARY
+  DIFFERENTIAL
+  RULE_OUT
+}
+
+enum DiagnosisStatus {
+  ACTIVE
+  RESOLVED
+  CHRONIC
+  INACTIVE
+}
+
+enum Severity {
+  MILD
+  MODERATE
+  SEVERE
+  CRITICAL
+}
+
+enum PrescriptionStatus {
+  PENDING
+  SENT_TO_PHARMACY
+  FILLED
+  PARTIALLY_FILLED
+  CANCELLED
+  EXPIRED
+}
+
+enum FormularyStatus {
+  COVERED
+  NOT_COVERED
+  PRIOR_AUTH_REQUIRED
+  STEP_THERAPY_REQUIRED
+}
+
+enum LabOrderStatus {
+  ORDERED
+  COLLECTED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum LabResultStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  AMENDED
+  CANCELLED
+}
+
+enum AbnormalFlag {
+  HIGH
+  LOW
+  CRITICAL_HIGH
+  CRITICAL_LOW
+  ABNORMAL
+}
+
+enum PACSStatus {
+  PENDING
+  STORED
+  RETRIEVED
+  ERROR
+}
+
+enum ImageStatus {
+  PENDING
+  AVAILABLE
+  ARCHIVED
+  ERROR
+}
+
+enum ReportStatus {
+  DRAFT
+  PENDING_REVIEW
+  REVIEWED
+  SIGNED
+  AMENDED
+}
+
+enum TelehealthType {
+  VIDEO_CALL
+  PHONE_CALL
+  CHAT
+  REMOTE_MONITORING
+}
+
+enum TelehealthStatus {
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  TECHNICAL_ISSUES
+}
+
+enum BillingStatus {
+  PENDING
+  SENT
+  PAID
+  PARTIALLY_PAID
+  OVERDUE
+  CANCELLED
+}
+
+enum ClaimType {
+  PROFESSIONAL
+  INSTITUTIONAL
+  DENTAL
+  VISION
+}
+
+enum ClaimStatus {
+  SUBMITTED
+  PENDING
+  APPROVED
+  DENIED
+  PARTIALLY_APPROVED
+  RESUBMITTED
+}
+
+// ============================================================================
+// INDEXES FOR PERFORMANCE
+// ============================================================================
+
+// Additional indexes for common queries
+// These are defined inline above, but listed here for reference:
+//
+// - tenants: domain, subdomain
+// - users: tenantId+email, tenantId+role, email
+// - patients: tenantId+mrn, tenantId+lastName+firstName, phone, email, fulltext(firstName, lastName)
+// - appointments: tenantId+startTime, patientId+startTime, doctorId+startTime, status
+// - visits: patientId, status
+// - medical_records: patientId+createdAt, doctorId, fulltext(subjective, objective, assessment, plan)
+// - vital_signs: patientId+recordedAt
+// - prescriptions: patientId, doctorId, status
+// - lab_orders: patientId, orderNumber
+// - lab_results: patientId+resultedAt, testCode
+// - medical_images: patientId, studyType
+// - billing_records: patientId, status
+// - audit_logs: userId+timestamp, action, resource
